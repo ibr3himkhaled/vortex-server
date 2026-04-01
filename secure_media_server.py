@@ -520,13 +520,6 @@ async def _run_download(job: DownloadJob) -> bool:
         }
 
         if is_youtube_url(job.url):
-            extractor_args = {
-                "youtube": {
-                    "player_client": ["android", "web"],
-                    "player_skip": ["webpage", "configs"],
-                }
-            }
-            ydl_opts["extractor_args"] = extractor_args
             cookie_file = str(BASE_DIR / "cookies.txt")
             if os.path.exists(cookie_file):
                 ydl_opts["cookiefile"] = cookie_file
@@ -871,12 +864,6 @@ async def analyze(body: AnalyzeRequest, request: Request):
         }
 
         if is_youtube:
-            ydl_opts["extractor_args"] = {
-                "youtube": {
-                    "player_client": ["android", "web"],
-                    "player_skip": ["webpage", "configs"],
-                }
-            }
             cookie_file = str(BASE_DIR / "cookies.txt")
             if os.path.exists(cookie_file):
                 ydl_opts["cookiefile"] = cookie_file
