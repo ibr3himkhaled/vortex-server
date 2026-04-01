@@ -500,7 +500,7 @@ async def _run_download(job: DownloadJob) -> bool:
             "outtmpl": output_path,
             "quiet": True,
             "no_warnings": True,
-            "socket_timeout": 30,
+            "socket_timeout": 60,
             "retries": 10,
             "fragment_retries": 10,
             "concurrent_fragment_downloads": 8,
@@ -508,8 +508,28 @@ async def _run_download(job: DownloadJob) -> bool:
             "http_chunk_size": 524288,
             "continuedl": True,
             "nopart": False,
+            "sleep_interval_requests": 2,
+            "max_sleep_interval": 5,
+            "nocheckcertificate": True,
+            "http_headers": {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Accept-Language": "en-US,en;q=0.9",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            },
             "progress_hooks": [],
         }
+
+        if is_youtube_url(job.url):
+            extractor_args = {
+                "youtube": {
+                    "player_client": ["android", "web"],
+                    "player_skip": ["webpage", "configs"],
+                }
+            }
+            ydl_opts["extractor_args"] = extractor_args
+            cookie_file = str(BASE_DIR / "cookies.txt")
+            if os.path.exists(cookie_file):
+                ydl_opts["cookiefile"] = cookie_file
 
         job_id_local = job.job_id
 
@@ -830,16 +850,36 @@ async def analyze(body: AnalyzeRequest, request: Request):
     try:
         is_tiktok = is_tiktok_url(body.url)
         is_snapchat = is_snapchat_url(body.url)
+        is_youtube = is_youtube_url(body.url)
+
         ydl_opts = {
             "quiet": True,
             "no_warnings": True,
             "skip_download": True,
-            "socket_timeout": 30,
-            "retries": 3,
-            "fragment_retries": 3,
+            "socket_timeout": 60,
+            "retries": 10,
+            "fragment_retries": 10,
             "ignoreerrors": is_tiktok or is_snapchat,
             "nocheckcertificate": True,
+            "sleep_interval_requests": 2,
+            "max_sleep_interval": 5,
+            "http_headers": {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Accept-Language": "en-US,en;q=0.9",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            },
         }
+
+        if is_youtube:
+            ydl_opts["extractor_args"] = {
+                "youtube": {
+                    "player_client": ["android", "web"],
+                    "player_skip": ["webpage", "configs"],
+                }
+            }
+            cookie_file = str(BASE_DIR / "cookies.txt")
+            if os.path.exists(cookie_file):
+                ydl_opts["cookiefile"] = cookie_file
 
         def _extract():
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
