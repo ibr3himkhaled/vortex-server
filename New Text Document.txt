@@ -1,0 +1,6 @@
+git init
+git add .
+git commit -m "deploy vortex server"
+git branch -M main
+git remote add origin https://github.com/ibr3himkhaled/REPO.git
+git push -u origin main
