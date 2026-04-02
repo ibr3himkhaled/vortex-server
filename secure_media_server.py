@@ -53,7 +53,7 @@ ALLOWED_ORIGINS: list[str] = ["*"]
 API_KEY = os.getenv("API_KEY", "")
 API_KEY_HEADER = "X-API-Key"
 
-ENABLE_API_KEY = os.getenv("ENABLE_API_KEY", "true").lower() == "true"
+ENABLE_API_KEY = os.getenv("ENABLE_API_KEY", "false").lower() == "true"
 ALLOW_DYNAMIC_KEYS = os.getenv("ALLOW_DYNAMIC_KEYS", "true").lower() == "true"
 
 MAX_FILE_SIZE_MB = int(os.getenv("MAX_FILE_SIZE_MB", "500"))
