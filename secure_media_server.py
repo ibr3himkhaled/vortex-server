@@ -17,6 +17,8 @@ from typing import Any, Optional
 from urllib.parse import urlparse, urlunparse
 
 import yt_dlp
+from pytubefix import YouTube
+from pytubefix.exceptions import RegexMatchError, VideoUnavailable
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
@@ -829,6 +831,77 @@ class _Counter:
 metrics_requests_total = _Counter()
 
 
+def _extract_with_pytube(url: str) -> dict:
+    """Extract video info using Pytube (alternative to yt-dlp)."""
+    try:
+        yt = YouTube(url)
+        video_formats = []
+        audio_formats = []
+        seen_resolutions = set()
+
+        streams = yt.streams
+
+        for stream in streams:
+            if stream.is_progressive:
+                resolution = stream.resolution or "Unknown"
+                if resolution not in seen_resolutions:
+                    seen_resolutions.add(resolution)
+                    video_formats.append(
+                        {
+                            "format_id": f"pytube_{stream.itag}",
+                            "ext": stream.subtype or "mp4",
+                            "resolution": resolution,
+                            "width": stream.width,
+                            "height": stream.height,
+                            "fps": 0,
+                            "filesize": stream.filesize or 0,
+                            "video_url": stream.url,
+                            "audio_url": stream.url,
+                            "is_combined": True,
+                            "has_audio_stream": stream.includes_audio_track,
+                        }
+                    )
+
+        for stream in streams.filter(only_audio=True):
+            audio_formats.append(
+                {
+                    "format_id": f"pytube_audio_{stream.itag}",
+                    "ext": stream.subtype or "m4a",
+                    "resolution": f"{stream.abr}" if stream.abr else "Audio",
+                    "bitrate": int(stream.abr.replace("kbps", ""))
+                    if stream.abr
+                    else 128,
+                    "filesize": stream.filesize or 0,
+                    "audio_url": stream.url,
+                }
+            )
+
+        return {
+            "title": yt.title or "Unknown",
+            "thumbnail": yt.thumbnail_url or "",
+            "duration": yt.length or 0,
+            "description": yt.description or "",
+            "uploader": yt.author or "Unknown",
+            "upload_date": None,
+            "view_count": yt.views or 0,
+            "like_count": None,
+            "is_live": False,
+            "is_private": False,
+            "is_unlisted": False,
+            "webpage_url": url,
+            "extractor": "youtube",
+            "extractor_key": "Youtube",
+            "is_youtube": True,
+            "is_tiktok": False,
+            "is_snapchat": False,
+            "formats": {"video": video_formats, "audio": audio_formats},
+            "expires_in": 300,
+        }
+    except Exception as e:
+        logger.error(f"Pytube extraction failed: {e}")
+        return None
+
+
 @app.post("/analyze")
 async def analyze(body: AnalyzeRequest, request: Request):
     """Analyze URL and return formats for all platforms."""
@@ -872,7 +945,24 @@ async def analyze(body: AnalyzeRequest, request: Request):
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 return ydl.extract_info(body.url, download=False)
 
-        info = await asyncio.to_thread(_extract)
+        info = None
+        try:
+            info = await asyncio.to_thread(_extract)
+        except Exception as e:
+            logger.warning(f"yt-dlp failed for YouTube: {e}")
+
+        # Fallback to Pytube if yt-dlp failed or YouTube is blocked
+        if is_youtube and (info is None or not info.get("formats")):
+            logger.info("Trying Pytube as fallback for YouTube")
+            try:
+                pytube_result = await asyncio.to_thread(_extract_with_pytube, body.url)
+                if pytube_result:
+                    analyze_cache.set(body.url, pytube_result)
+                    logger.info(f"Pytube succeeded for YouTube")
+                    return pytube_result
+            except Exception as e:
+                logger.error(f"Pytube also failed: {e}")
+
         if info is None:
             raise RuntimeError("Failed to extract video info")
 
