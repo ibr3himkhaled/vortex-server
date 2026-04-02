@@ -17,6 +17,7 @@ from typing import Any, Optional
 from urllib.parse import urlparse, urlunparse
 
 import yt_dlp
+import aiohttp
 from pytubefix import YouTube
 from pytubefix.exceptions import RegexMatchError, VideoUnavailable
 from fastapi import FastAPI, Request
@@ -831,6 +832,105 @@ class _Counter:
 metrics_requests_total = _Counter()
 
 
+INVIDIOUS_INSTANCES = [
+    "https://invidious.privacyredirect.com",
+    "https://yewtu.be",
+    "https://invidious.kavin.rocks",
+    "https://vid.puffyan.us",
+]
+
+
+def _extract_video_id(url: str) -> Optional[str]:
+    """Extract video ID from YouTube URL."""
+    patterns = [
+        r"(?:youtube\.com/watch\?v=|youtu\.be/|youtube\.com/embed/)([a-zA-Z0-9_-]{11})",
+        r"youtube\.com/shorts/([a-zA-Z0-9_-]{11})",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, url)
+        if match:
+            return match.group(1)
+    return None
+
+
+async def _extract_with_invidious(url: str) -> Optional[dict]:
+    """Extract video info using Invidious API (bypasses YouTube blocks)."""
+    video_id = _extract_video_id(url)
+    if not video_id:
+        return None
+
+    for instance in INVIDIOUS_INSTANCES:
+        try:
+            api_url = f"{instance}/api/v1/videos/{video_id}"
+            async with aiohttp.ClientSession() as session:
+                async with session.get(api_url, timeout=30) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        video_formats = []
+                        audio_formats = []
+                        seen_resolutions = set()
+
+                        for f in data.get("formatStreams", []):
+                            resolution = f.get("resolution", "")
+                            height = (
+                                int(resolution.replace("p", "")) if resolution else 0
+                            )
+                            res = f"{height}p"
+
+                            if res not in seen_resolutions:
+                                seen_resolutions.add(res)
+                                video_formats.append(
+                                    {
+                                        "format_id": f.get("formatId", ""),
+                                        "ext": f.get("type", "").split("/")[1]
+                                        if "/" in f.get("type", "mp4")
+                                        else "mp4",
+                                        "resolution": res,
+                                        "width": None,
+                                        "height": height,
+                                        "fps": 0,
+                                        "filesize": f.get("contentLength", 0),
+                                        "video_url": f.get("url", ""),
+                                        "audio_url": f.get("url", ""),
+                                        "is_combined": "video"
+                                        in f.get("type", "").lower()
+                                        and "audio" in f.get("type", "").lower(),
+                                        "has_audio_stream": True,
+                                    }
+                                )
+
+                        video_formats.sort(
+                            key=lambda x: x.get("height", 0), reverse=True
+                        )
+
+                        return {
+                            "title": data.get("title", "Unknown"),
+                            "thumbnail": data.get("thumbnailUrl", ""),
+                            "duration": data.get("lengthSeconds", 0),
+                            "description": data.get("description", ""),
+                            "uploader": data.get("author", "Unknown"),
+                            "upload_date": None,
+                            "view_count": data.get("viewCount", 0),
+                            "like_count": None,
+                            "is_live": False,
+                            "is_private": False,
+                            "is_unlisted": data.get("isUnlisted", False),
+                            "webpage_url": url,
+                            "extractor": "youtube",
+                            "extractor_key": "Youtube",
+                            "is_youtube": True,
+                            "is_tiktok": False,
+                            "is_snapchat": False,
+                            "formats": {"video": video_formats, "audio": audio_formats},
+                            "expires_in": 300,
+                        }
+        except Exception as e:
+            logger.warning(f"Invidious instance {instance} failed: {e}")
+            continue
+
+    return None
+
+
 def _extract_with_pytube(url: str) -> dict:
     """Extract video info using Pytube (alternative to yt-dlp)."""
     try:
@@ -962,6 +1062,16 @@ async def analyze(body: AnalyzeRequest, request: Request):
                     return pytube_result
             except Exception as e:
                 logger.error(f"Pytube also failed: {e}")
+
+            logger.info("Trying Invidious as second fallback for YouTube")
+            try:
+                invidious_result = await _extract_with_invidious(body.url)
+                if invidious_result:
+                    analyze_cache.set(body.url, invidious_result)
+                    logger.info(f"Invidious succeeded for YouTube")
+                    return invidious_result
+            except Exception as e:
+                logger.error(f"Invidious also failed: {e}")
 
         if info is None:
             raise RuntimeError("Failed to extract video info")
